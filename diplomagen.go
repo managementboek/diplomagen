@@ -44,14 +44,18 @@ func patchPdf(outputPath, inputPath string, actions []string, forceOverwrite boo
 	if err != nil {
 		return err
 	}
-
 	trailer, err := pdfReader.GetTrailer()
 	if err != nil {
 		return err
 	}
 
+	patchset, err := ParsePatchset(actions)
+	if err != nil {
+		return err
+	}
+
 	// FIXME: parse version from input document
-	out, err := NewObjWriter(outputPath, forceOverwrite, 1, 5)
+	out, err := NewObjWriter(outputPath, forceOverwrite, 1, 4)
 	if err != nil {
 		return err
 	}
@@ -63,7 +67,10 @@ func patchPdf(outputPath, inputPath string, actions []string, forceOverwrite boo
 			return err
 		}
 
-		// TODO: patch object
+		o, err = patchset.ApplyAll(n, o)
+		if err != nil {
+			return err
+		}
 
 		err = out.Write(n, o)
 		if err != nil {
@@ -246,4 +253,110 @@ func (w *ObjWriter) Finalize(trailer *pdfcore.PdfObjectDictionary) error {
 	}
 
 	return w.out.Close()
+}
+
+type Patchset []Patch
+
+func (ps Patchset) ApplyAll(index int, obj pdfcore.PdfObject) (pdfcore.PdfObject, error) {
+	var err error
+	for _, p := range ps {
+		if p.ObjectID() == index {
+			obj, err = p.Apply(obj)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return obj, nil
+}
+
+func ParsePatchset(patches []string) (Patchset, error) {
+	rv := make([]Patch, 0)
+
+	for _, s := range patches {
+		switch s[0] {
+		case 'S':
+			p := ModifyLine{}
+			_, err := fmt.Sscanf(s, "S%d:%d:", &p.OID, &p.Line)
+			if err != nil {
+				return nil, fmt.Errorf("syntax error in replace line command: '%s'", s)
+			}
+			colons := 0
+			var i int
+			var c rune
+			for i, c = range s {
+				if c == ':' {
+					colons++
+					if colons == 2 {
+						break
+					}
+				}
+			}
+			p.NewContents = []byte(s[i+1:])
+
+			rv = append(rv, p)
+		default:
+			return nil, fmt.Errorf("unknown patch command '%s'", s)
+		}
+	}
+
+	return Patchset(rv), nil
+}
+
+// A patch represents one modification operation
+type Patch interface {
+	// ObjectID returns the object ID this patch applies to
+	ObjectID() int
+
+	// Apply applies the patch to the PDF object, and returns a modified version of the object
+	Apply(obj pdfcore.PdfObject) (pdfcore.PdfObject, error)
+}
+
+type ModifyLine struct {
+	OID, Line   int
+	NewContents []byte
+}
+
+func (m ModifyLine) ObjectID() int {
+	return m.OID
+}
+
+func (m ModifyLine) Apply(obj pdfcore.PdfObject) (pdfcore.PdfObject, error) {
+	str, ok := obj.(*pdfcore.PdfObjectStream)
+	if !ok {
+		return nil, fmt.Errorf("object is not a stream: %T", obj)
+	}
+
+	streamContents, err := pdfcore.DecodeStream(str)
+	if err != nil {
+		return nil, err
+	}
+
+	line := 1
+	preambleLength := 0
+	trailerOffset := len(streamContents)
+
+	for i, c := range streamContents {
+		if c == '\n' {
+			line++
+			if line == m.Line {
+				preambleLength = i + 1
+			} else if line == (m.Line + 1) {
+				trailerOffset = i
+			}
+		}
+	}
+
+	buf := make([]byte, preambleLength+len(m.NewContents)+(len(streamContents)-trailerOffset))
+	copy(buf, streamContents[:preambleLength])
+	copy(buf[preambleLength:], m.NewContents)
+	copy(buf[preambleLength+len(m.NewContents):], streamContents[trailerOffset:])
+
+	str.Stream = buf
+	err = pdfcore.EncodeStream(str)
+	if err != nil {
+		return nil, err
+	}
+
+	return str, nil
 }
