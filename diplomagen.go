@@ -12,7 +12,10 @@ import (
 
 func main() {
 	var (
-		analyze         = kingpin.Command("analyze", "Analyze a template PDF").Default()
+		strings    = kingpin.Command("strings", "Extract strings from a template PDF").Default()
+		stringsPDF = strings.Arg("pdf", "Input PDF").Required().ExistingFile()
+
+		analyze         = kingpin.Command("analyze", "Analyze a template PDF")
 		analyzePDF      = analyze.Arg("pdf", "Input PDF").Required().ExistingFile()
 		analyzeObjectID = analyze.Flag("objectid", "Object ID to decode").Short('n').Default("-1").Int()
 
@@ -27,6 +30,8 @@ func main() {
 	kingpin.CommandLine.Help = "diplomagen is a program to replace texts and images in existing PDF files."
 
 	switch kingpin.Parse() {
+	case "strings":
+		kingpin.FatalIfError(listStrings(*stringsPDF), "Failed to extract usable strings from PDF")
 	case "analyze":
 		kingpin.FatalIfError(inspectPdfObject(*analyzePDF, *analyzeObjectID), "Failed to analyze PDF")
 	case "patch":
@@ -79,6 +84,61 @@ func patchPdf(outputPath, inputPath string, actions []string, forceOverwrite boo
 	}
 
 	out.Finalize(trailer)
+
+	return nil
+}
+
+func listStrings(inputPath string) error {
+	f, err := os.Open(inputPath)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	pdfReader, err := pdf.NewPdfReader(f)
+	if err != nil {
+		return err
+	}
+
+	nums := pdfReader.GetObjectNums()
+	for _, n := range nums {
+		o, err := pdfReader.GetIndirectObjectByNumber(n)
+		if err != nil {
+			return err
+		}
+
+		stream, ok := o.(*pdfcore.PdfObjectStream)
+		if !ok {
+			continue
+		}
+
+		st := stream.Get("Subtype")
+		if st != nil {
+			continue
+		}
+
+		decoded, err := pdfcore.DecodeStream(stream)
+		if err != nil {
+			return err
+		}
+
+		lineNo := 1
+		lineStart := 0
+		for i, c := range decoded {
+			if c == '\n' {
+				l := string(decoded[lineStart:i])
+				if len(l) > 4 {
+					if (l[0:1] == "[" && l[len(l)-3:] == "]TJ") ||
+						(l[0:1] == "(" && l[len(l)-3:] == ")Tj") {
+						fmt.Printf("%d:%d:%s\n", n, lineNo, l)
+					}
+				}
+				lineNo++
+				lineStart = i + 1
+			}
+		}
+	}
 
 	return nil
 }
