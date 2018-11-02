@@ -3,39 +3,26 @@ package main
 import (
 	"fmt"
 	"os"
-	"strconv"
+
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 
 	pdfcore "github.com/unidoc/unidoc/pdf/core"
 	pdf "github.com/unidoc/unidoc/pdf/model"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Syntax: go run pdf_get_object.go input.pdf [num]")
-		fmt.Println("If num is not specified, will display the trailer dictionary")
-		os.Exit(1)
-	}
+	var (
+		analyze         = kingpin.Command("analyze", "Analyze a template PDF").Default()
+		analyzePDF      = analyze.Arg("pdf", "Input PDF").Required().ExistingFile()
+		analyzeObjectID = analyze.Flag("objectid", "Object ID to decode").Short('n').Default("-1").Int()
+	)
 
-	// Load a console logger in debug mode.
-	//unicommon.SetLogger(unicommon.NewConsoleLogger(unicommon.LogLevelDebug))
+	kingpin.UsageTemplate(kingpin.CompactUsageTemplate).Author("Managementboek.nl")
+	kingpin.CommandLine.Help = "diplomagen is a program to replace texts and images in existing PDF files."
 
-	inputPath := os.Args[1]
-
-	objNum := -1
-	if len(os.Args) > 2 {
-		num, err := strconv.Atoi(os.Args[2])
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
-		objNum = num
-	}
-
-	fmt.Printf("Input file: %s\n", inputPath)
-	err := inspectPdfObject(inputPath, objNum)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+	switch kingpin.Parse() {
+	case "analyze":
+		kingpin.FatalIfError(inspectPdfObject(*analyzePDF, *analyzeObjectID), "Failed to analyze PDF")
 	}
 }
 
