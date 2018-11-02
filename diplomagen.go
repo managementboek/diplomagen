@@ -39,33 +39,63 @@ func inspectPdfObject(inputPath string, objNum int) error {
 		return err
 	}
 
-	isEncrypted, err := pdfReader.IsEncrypted()
-	if err != nil {
-		return err
-	}
-
-	if isEncrypted {
-		// If encrypted, try decrypting with an empty one.
-		// Can also specify a user/owner password here by modifying the line below.
-		auth, err := pdfReader.Decrypt([]byte(""))
-		if err != nil {
-			fmt.Printf("Decryption error: %v\n", err)
-			return err
-		}
-		if !auth {
-			fmt.Println(" This file is encrypted with opening password. Modify the code to specify the password.")
-			return nil
-		}
-	}
-
-	// Print trailer
+	// List all Object IDs
 	if objNum == -1 {
-		trailer, err := pdfReader.GetTrailer()
-		if err != nil {
-			return err
+		fmt.Printf("List of object IDs:\n\n")
+
+		nums := pdfReader.GetObjectNums()
+		for _, n := range nums {
+			o, err := pdfReader.GetIndirectObjectByNumber(n)
+			if err != nil {
+				return err
+			}
+
+			switch obj := o.(type) {
+			case *pdfcore.PdfObjectStream:
+				fmt.Printf("Object %d: ", n)
+
+				st := obj.Get("Subtype")
+				if st == nil {
+					fmt.Printf("Data stream")
+				} else if subtype, ok := st.(*pdfcore.PdfObjectName); ok {
+					switch *subtype {
+					case "Image":
+						w, h := 0, 0
+						if width, ok := (obj.Get("Width")).(*pdfcore.PdfObjectInteger); ok {
+							w = int(int64(*width))
+						}
+						if height, ok := (obj.Get("Height")).(*pdfcore.PdfObjectInteger); ok {
+							h = int(int64(*height))
+						}
+						if comp, ok := (obj.Get("Filter")).(*pdfcore.PdfObjectName); ok {
+							if *comp == "DCTDecode" {
+								fmt.Printf("JPEG image %dx%d", w, h)
+							} else {
+								fmt.Printf("Image %dx%d", w, h)
+							}
+						} else {
+							fmt.Printf("Image %s", o)
+						}
+
+					case "Type1C":
+						fmt.Printf("Font")
+
+					default:
+						fmt.Printf("Stream of type %T %s %s", st, st, o)
+					}
+				} else {
+					fmt.Printf("Stream of type %T %s %s", st, st, o)
+				}
+				fmt.Printf("\n")
+
+			case *pdfcore.PdfIndirectObject:
+				_ = true
+
+			default:
+				fmt.Printf("Object %d: %T\n", n, o)
+			}
 		}
 
-		fmt.Printf("Trailer: %s\n", trailer.String())
 		return nil
 	}
 
@@ -74,15 +104,16 @@ func inspectPdfObject(inputPath string, objNum int) error {
 		return err
 	}
 
-	fmt.Printf("Object %d: %s\n", objNum, obj.String())
-
 	if stream, is := obj.(*pdfcore.PdfObjectStream); is {
 		decoded, err := pdfcore.DecodeStream(stream)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Decoded:\n%s", decoded)
+		os.Stdout.Write(decoded)
+
 	} else if indObj, is := obj.(*pdfcore.PdfIndirectObject); is {
+		fmt.Printf("Object %d: %s\n", objNum, obj.String())
+
 		fmt.Printf("%T\n", indObj.PdfObject)
 		fmt.Printf("%s\n", indObj.PdfObject.String())
 	}
