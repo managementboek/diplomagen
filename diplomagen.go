@@ -15,6 +15,12 @@ func main() {
 		analyze         = kingpin.Command("analyze", "Analyze a template PDF").Default()
 		analyzePDF      = analyze.Arg("pdf", "Input PDF").Required().ExistingFile()
 		analyzeObjectID = analyze.Flag("objectid", "Object ID to decode").Short('n').Default("-1").Int()
+
+		patch         = kingpin.Command("patch", "Make some edits in a template PDF")
+		patchInputPDF = patch.Flag("template", "Input (template) PDF file").Required().Short('i').ExistingFile()
+		patchOutput   = patch.Flag("output", "Output PDF file").Required().Short('o').String()
+		patchForce    = patch.Flag("overwrite", "Overwrite files without prompting").Short('f').Bool()
+		patchActions  = patch.Arg("actions", "Replacements to perform").Strings()
 	)
 
 	kingpin.UsageTemplate(kingpin.CompactUsageTemplate).Author("Managementboek.nl")
@@ -23,7 +29,51 @@ func main() {
 	switch kingpin.Parse() {
 	case "analyze":
 		kingpin.FatalIfError(inspectPdfObject(*analyzePDF, *analyzeObjectID), "Failed to analyze PDF")
+	case "patch":
+		kingpin.FatalIfError(patchPdf(*patchOutput, *patchInputPDF, *patchActions, *patchForce), "Failed to patch PDF")
 	}
+}
+
+func patchPdf(outputPath, inputPath string, actions []string, forceOverwrite bool) error {
+	f, err := os.Open(inputPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	pdfReader, err := pdf.NewPdfReader(f)
+	if err != nil {
+		return err
+	}
+
+	trailer, err := pdfReader.GetTrailer()
+	if err != nil {
+		return err
+	}
+
+	// FIXME: parse version from input document
+	out, err := NewObjWriter(outputPath, forceOverwrite, 1, 5)
+	if err != nil {
+		return err
+	}
+
+	nums := pdfReader.GetObjectNums()
+	for _, n := range nums {
+		o, err := pdfReader.GetIndirectObjectByNumber(n)
+		if err != nil {
+			return err
+		}
+
+		// TODO: patch object
+
+		err = out.Write(n, o)
+		if err != nil {
+			return err
+		}
+	}
+
+	out.Finalize(trailer)
+
+	return nil
 }
 
 func inspectPdfObject(inputPath string, objNum int) error {
@@ -119,4 +169,81 @@ func inspectPdfObject(inputPath string, objNum int) error {
 	}
 
 	return nil
+}
+
+type ObjWriter struct {
+	out     *os.File
+	offsets []int64
+}
+
+func NewObjWriter(path string, force bool, maj, min int) (*ObjWriter, error) {
+	mode := os.O_RDWR | os.O_CREATE
+	if force {
+		mode |= os.O_TRUNC
+	}
+	out, err := os.OpenFile(path, mode, 0666)
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = fmt.Fprintf(out, "%%PDF-%d.%d\n%%\xe2\xe3\xcf\xd3\n", maj, min)
+	if err != nil {
+		return nil, err
+	}
+
+	rv := &ObjWriter{
+		out:     out,
+		offsets: make([]int64, 0),
+	}
+	return rv, nil
+}
+
+func (w *ObjWriter) Write(index int, obj pdfcore.PdfObject) error {
+	offset, _ := w.out.Seek(0, os.SEEK_CUR)
+	w.offsets = append(w.offsets, offset)
+
+	var err error
+
+	switch object := obj.(type) {
+	case *pdfcore.PdfObjectStream:
+		fmt.Fprintf(w.out, "%d 0 obj\n%s\nstream\n", index, object.PdfObjectDictionary.DefaultWriteString())
+		_, err = w.out.Write(object.Stream)
+		fmt.Fprintf(w.out, "\nendstream\nendobj\n")
+
+	case *pdfcore.PdfIndirectObject:
+		_, err = fmt.Fprintf(w.out, "%d 0 obj\n%s\nendobj\n", index, object.PdfObject.DefaultWriteString())
+
+	default:
+		_, err = fmt.Fprintf(w.out, "%d 0 obj\n%s\nendobj\n", index, obj.DefaultWriteString())
+	}
+	return err
+}
+
+func (w *ObjWriter) Finalize(trailer *pdfcore.PdfObjectDictionary) error {
+	// Write xref table.
+	xrefOffset, _ := w.out.Seek(0, os.SEEK_CUR)
+	_, err := fmt.Fprintf(w.out, "%d %d\r\n%.10d %.5d f\r\n", 0, len(w.offsets)+1, 0, 65535)
+	if err != nil {
+		return err
+	}
+
+	for _, offset := range w.offsets {
+		_, err := fmt.Fprintf(w.out, "%.10d %.5d n\r\n", offset, 0)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Write trailer
+	_, err = fmt.Fprintf(w.out, "trailer\n%s\n", trailer.DefaultWriteString())
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(w.out, "startxref\n%d\n%%%%EOF\n", xrefOffset)
+	if err != nil {
+		return err
+	}
+
+	return w.out.Close()
 }
