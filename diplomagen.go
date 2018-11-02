@@ -20,7 +20,7 @@ func main() {
 		analyzeObjectID = analyze.Flag("objectid", "Object ID to decode").Short('n').Default("-1").Int()
 
 		patch         = kingpin.Command("patch", "Make some edits in a template PDF")
-		patchInputPDF = patch.Flag("template", "Input (template) PDF file").Required().Short('i').ExistingFile()
+		patchInputPDF = patch.Flag("input", "Input (template) PDF file").Required().Short('i').ExistingFile()
 		patchOutput   = patch.Flag("output", "Output PDF file").Required().Short('o').String()
 		patchForce    = patch.Flag("overwrite", "Overwrite files without prompting").Short('f').Bool()
 		patchActions  = patch.Arg("actions", "Replacements to perform").Strings()
